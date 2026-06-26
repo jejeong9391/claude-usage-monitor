@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     let store = UsageStore()
+    let updater = UpdateService()
     var dataTimer: Timer?
     var statusTimer: Timer?
 
@@ -25,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host = NSHostingController(
             rootView: PopoverView(
                 store: store,
+                updater: updater,
                 onRefresh: { [weak self] in self?.store.refresh() },
                 onQuit: { NSApp.terminate(nil) }
             )

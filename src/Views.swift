@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PopoverView: View {
     @ObservedObject var store: UsageStore
+    @ObservedObject var updater: UpdateService
     var onRefresh: () -> Void
     var onQuit: () -> Void
 
@@ -291,12 +292,13 @@ struct PopoverView: View {
     }
 
     var footer: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: "clock").font(.system(size: 9)).foregroundColor(Theme.textTertiary)
             Text("갱신 \(formatTimeOnly(store.lastUpdate))")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(Theme.textTertiary)
             Spacer()
+            updateControl
             Button(action: onQuit) {
                 Text("종료")
                     .font(.system(size: 11, weight: .medium))
@@ -308,5 +310,43 @@ struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    // 업데이트 컨트롤: 상태(대기/진행/실패)에 따라 버튼·스피너·재시도를 전환한다.
+    @ViewBuilder
+    var updateControl: some View {
+        switch updater.state {
+        case .running:
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                Text("업데이트 중…")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 4)
+        case .failed(let message):
+            Button(action: { updater.startUpdate() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").font(.system(size: 10))
+                    Text("재시도").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(Theme.warn)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
+            }
+            .buttonStyle(.plain)
+            .help(message)
+        case .idle:
+            Button(action: { updater.startUpdate() }) {
+                Text("업데이트")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(updater.canUpdate ? Theme.textSecondary : Theme.textTertiary)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!updater.canUpdate)
+            .help(updater.canUpdate ? "git pull + 재빌드 + 재시작" : "소스 경로를 찾을 수 없습니다 (SourceRoot)")
+        }
     }
 }

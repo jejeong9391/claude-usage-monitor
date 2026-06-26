@@ -38,6 +38,13 @@ swiftc -O "$ROOT"/src/*.swift \
 echo "▶ 번들 구성…"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 
+# 인앱 업데이트가 소스 위치를 알 수 있도록 빌드 시점의 절대경로를 주입한다.
+# (codesign 이 Info.plist 를 봉인하므로 반드시 서명 전에 기록)
+PLIST="$APP/Contents/Info.plist"
+if /usr/libexec/PlistBuddy -c "Set :SourceRoot $ROOT" "$PLIST" 2>/dev/null; then :; else
+  /usr/libexec/PlistBuddy -c "Add :SourceRoot string $ROOT" "$PLIST"
+fi
+
 echo "▶ ad-hoc 코드 서명…"
 # Developer ID 인증서가 없으므로 ad-hoc(-) 서명. 배포 시 받는 사람은
 # Gatekeeper 우회가 필요하다(README 참고).
