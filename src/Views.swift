@@ -65,6 +65,8 @@ struct PopoverView: View {
                     notice("Claude Code 로그인 필요", "Keychain 에서 자격증명을 찾지 못했습니다. 터미널에서 Claude Code 에 로그인하세요.", "lock")
                 } else if case .unauthorized = store.officialState {
                     notice("토큰 만료 — 재인증 필요", "Claude Code 를 한 번 사용하면 토큰이 자동 갱신됩니다.", "exclamationmark.triangle")
+                } else if case .rateLimited = store.officialState {
+                    notice("사용량 API 호출 제한", "Anthropic 사용량 API 요청이 일시적으로 제한되었습니다. 잠시 후 자동으로 복구됩니다.", "hourglass")
                 } else if store.official == nil, store.officialState.isError {
                     notice("공식 데이터 오프라인", "네트워크 연결을 확인하세요.", "wifi.slash")
                 }

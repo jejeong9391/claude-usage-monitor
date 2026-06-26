@@ -15,12 +15,21 @@ enum KeychainToken {
         task.standardError = Pipe()
         do {
             try task.run()
-            task.waitUntilExit()
-            guard task.terminationStatus == 0 else { return nil }
-            return outPipe.fileHandleForReading.readDataToEndOfFile()
         } catch {
             return nil
         }
+        // keychain 접근 프롬프트(재서명된 바이너리 등)로 무한 블록되는 것을 방지.
+        // 5초 안에 끝나지 않으면 강제 종료하고 실패 처리 → 앱이 영구 스피너에 갇히지 않는다.
+        let deadline = Date().addingTimeInterval(5)
+        while task.isRunning && Date() < deadline {
+            usleep(50_000)
+        }
+        if task.isRunning {
+            task.terminate()
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        return outPipe.fileHandleForReading.readDataToEndOfFile()
     }
 
     /// credentials JSON 의 claudeAiOauth.accessToken 반환.
@@ -40,8 +49,10 @@ enum KeychainToken {
 
 enum OfficialResult {
     case ok(OfficialUsage)
+    case loading        // 최초 fetch 완료 전 (에러 아님 — 스피너만 표시)
     case noToken        // Keychain 에 자격증명 없음 → Claude Code 로그인 필요
     case unauthorized   // 401 → 토큰 만료
+    case rateLimited    // 429 또는 200+{error:rate_limit_error} → 일시적, 자동 복구
     case offline        // 네트워크/기타 실패
 }
 
@@ -62,15 +73,24 @@ enum OfficialUsageProvider {
         var result: OfficialResult = .offline
         let dataTask = URLSession.shared.dataTask(with: req) { data, response, _ in
             defer { sem.signal() }
-            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                result = .unauthorized
+            guard let http = response as? HTTPURLResponse else {
+                result = .offline
                 return
             }
-            guard
-                let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                let data = data,
-                let usage = try? JSONDecoder().decode(OfficialUsage.self, from: data)
-            else {
+            if http.statusCode == 401 { result = .unauthorized; return }
+            if http.statusCode == 429 { result = .rateLimited; return }
+            guard (200..<300).contains(http.statusCode), let data = data else {
+                result = .offline
+                return
+            }
+            // HTTP 200 이어도 본문이 에러 객체일 수 있다(관측됨: {"error":{"type":"rate_limit_error"}}).
+            // 모든 필드가 Optional 이라 그대로 디코드하면 빈 .ok 로 오인되므로 먼저 거른다.
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let err = obj["error"] as? [String: Any] {
+                result = (err["type"] as? String) == "rate_limit_error" ? .rateLimited : .offline
+                return
+            }
+            guard let usage = try? JSONDecoder().decode(OfficialUsage.self, from: data) else {
                 result = .offline
                 return
             }
