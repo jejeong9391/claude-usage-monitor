@@ -45,10 +45,20 @@ if /usr/libexec/PlistBuddy -c "Set :SourceRoot $ROOT" "$PLIST" 2>/dev/null; then
   /usr/libexec/PlistBuddy -c "Add :SourceRoot string $ROOT" "$PLIST"
 fi
 
-echo "▶ ad-hoc 코드 서명…"
-# Developer ID 인증서가 없으므로 ad-hoc(-) 서명. 배포 시 받는 사람은
-# Gatekeeper 우회가 필요하다(README 참고).
-codesign --force --deep --sign - "$APP"
+echo "▶ 코드 서명…"
+# 고정된 자체 서명 인증서가 login keychain 에 있으면 그것으로 서명한다.
+# 고정 인증서는 Designated Requirement 가 일정해 keychain ACL("항상 허용")이
+# 재빌드 후에도 유지된다 → 인앱 업데이트 시 keychain 재프롬프트가 사라진다.
+# 인증서가 없으면 ad-hoc(-) 으로 폴백하므로 빌드는 항상 동작한다.
+# (인증서 생성 방법: docs/code-signing.md 참고)
+SIGN_IDENTITY="${SIGN_IDENTITY:-ClaudeUsageMonitor Local}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
+  echo "   → 자체 서명 인증서 사용: $SIGN_IDENTITY"
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+else
+  echo "   → 인증서 '$SIGN_IDENTITY' 없음 → ad-hoc(-) 폴백"
+  codesign --force --deep --sign - "$APP"
+fi
 codesign --verify --verbose "$APP" 2>&1 | sed 's/^/   /'
 
 echo "✔ 빌드 완료: $APP"
