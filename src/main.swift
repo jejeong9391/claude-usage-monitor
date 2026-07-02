@@ -10,10 +10,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var dataTimer: Timer?
     var statusTimer: Timer?
 
-    static let popoverSize = NSSize(width: 420, height: 640)
+    static let popoverSize = NSSize(width: 460, height: 680)
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { self.setup() }
+    }
+
+    nonisolated func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            self.store.refreshLocalSessions()
+            self.updateStatusItem()
+        }
     }
 
     func setup() {
@@ -28,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 store: store,
                 updater: updater,
                 onRefresh: { [weak self] in self?.store.refresh() },
+                onPrimaryProviderChange: { [weak self] in self?.updateStatusItem() },
                 onQuit: { NSApp.terminate(nil) }
             )
         )
@@ -39,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = Self.popoverSize
         popover.contentViewController = host
 
+        store.refreshLocalSessions()
         store.refresh()
         // 데이터 60초 폴링
         dataTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -62,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            store.refreshLocalSessions()
             store.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
