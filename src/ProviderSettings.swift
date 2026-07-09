@@ -2,6 +2,7 @@ import Foundation
 
 enum ProviderSecretKind: String, CaseIterable, Identifiable {
     case openAIAdminKey
+    case geminiAPIKey
     case cursorTeamKey
     case anthropicAdminKey
 
@@ -11,6 +12,8 @@ enum ProviderSecretKind: String, CaseIterable, Identifiable {
         switch self {
         case .openAIAdminKey:
             return "ClaudeUsageMonitor.OpenAI.AdminKey"
+        case .geminiAPIKey:
+            return "ClaudeUsageMonitor.Gemini.APIKey"
         case .cursorTeamKey:
             return "ClaudeUsageMonitor.Cursor.TeamKey"
         case .anthropicAdminKey:
@@ -23,8 +26,18 @@ enum ProviderSecretKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .openAIAdminKey: return "OpenAI Admin API key"
+        case .geminiAPIKey: return "Gemini API key"
         case .cursorTeamKey: return "Cursor Team API key"
         case .anthropicAdminKey: return "Anthropic Admin API key"
+        }
+    }
+
+    var provider: AIProviderKind {
+        switch self {
+        case .openAIAdminKey: return .openAI
+        case .geminiAPIKey: return .gemini
+        case .cursorTeamKey: return .cursor
+        case .anthropicAdminKey: return .claude
         }
     }
 }
@@ -59,6 +72,39 @@ enum SecretStore {
             "-s", kind.serviceName,
             "-a", kind.accountName
         ], timeout: 3)
+    }
+
+    static func read(_ kind: ProviderSecretKind) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = [
+            "find-generic-password",
+            "-s", kind.serviceName,
+            "-a", kind.accountName,
+            "-w"
+        ]
+        let outPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+
+        let deadline = Date().addingTimeInterval(3)
+        while task.isRunning && Date() < deadline {
+            usleep(50_000)
+        }
+        if task.isRunning {
+            task.terminate()
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
     }
 
     static func save(_ kind: ProviderSecretKind, value: String) -> Bool {
@@ -141,12 +187,14 @@ struct LocalProviderSession: Equatable {
 
 typealias ClaudeLocalSession = LocalProviderSession
 typealias OpenAILocalSession = LocalProviderSession
+typealias GeminiLocalSession = LocalProviderSession
 typealias CodexLocalSession = LocalProviderSession
 typealias CursorLocalSession = LocalProviderSession
 
 struct LocalSessionSnapshot: Equatable {
     let claude: ClaudeLocalSession
     let openAI: OpenAILocalSession
+    let gemini: GeminiLocalSession
     let codex: CodexLocalSession
     let cursor: CursorLocalSession
 }
@@ -154,12 +202,14 @@ struct LocalSessionSnapshot: Equatable {
 enum LocalSessionDetector {
     static func detectAll(
         hasOpenAIAdminKey: Bool,
+        hasGeminiAPIKey: Bool,
         hasCursorTeamKey: Bool,
         hasAnthropicAdminKey: Bool
     ) -> LocalSessionSnapshot {
         LocalSessionSnapshot(
             claude: ClaudeLocalSessionDetector.detect(hasAnthropicAdminKey: hasAnthropicAdminKey),
             openAI: OpenAILocalSessionDetector.detect(hasAdminKey: hasOpenAIAdminKey),
+            gemini: GeminiLocalSessionDetector.detect(hasAPIKey: hasGeminiAPIKey),
             codex: CodexLocalSessionDetector.detect(),
             cursor: CursorLocalSessionDetector.detect(hasTeamKey: hasCursorTeamKey)
         )
@@ -281,6 +331,142 @@ enum OpenAILocalSessionDetector {
             executablePath: nil,
             statusText: "OpenAI API용 로컬 자격증명을 찾지 못했습니다."
         )
+    }
+}
+
+enum GeminiLocalSessionDetector {
+    private static var geminiHome: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".gemini")
+    }
+
+    static func detect(hasAPIKey: Bool) -> GeminiLocalSession {
+        let executable = findGeminiExecutable()
+        if let oauthSession = detectOAuthSession(executablePath: executable) {
+            return oauthSession
+        }
+
+        if hasAPIKey {
+            return GeminiLocalSession(
+                state: .loggedIn,
+                authMode: "API key",
+                accountID: nil,
+                credentialLocation: "ClaudeUsageMonitor Keychain",
+                lastRefresh: nil,
+                executablePath: executable,
+                statusText: "앱에 저장된 Gemini API key를 감지했습니다. CLI OAuth가 없을 때의 보조 자격증명입니다."
+            )
+        }
+
+        if environmentHasValue("GEMINI_API_KEY") {
+            return GeminiLocalSession(
+                state: .loggedIn,
+                authMode: "API key",
+                accountID: nil,
+                credentialLocation: "GEMINI_API_KEY",
+                lastRefresh: nil,
+                executablePath: executable,
+                statusText: "프로세스 환경변수에서 Gemini API key를 감지했습니다. CLI OAuth가 없을 때의 보조 자격증명입니다."
+            )
+        }
+
+        if environmentHasValue("GOOGLE_API_KEY") {
+            return GeminiLocalSession(
+                state: .loggedIn,
+                authMode: "API key",
+                accountID: nil,
+                credentialLocation: "GOOGLE_API_KEY",
+                lastRefresh: nil,
+                executablePath: executable,
+                statusText: "프로세스 환경변수에서 Google API key를 감지했습니다. CLI OAuth가 없을 때의 보조 자격증명입니다."
+            )
+        }
+
+        if let executable {
+            return GeminiLocalSession(
+                state: .loggedOut,
+                authMode: "Google OAuth",
+                accountID: nil,
+                credentialLocation: "~/.gemini/oauth_creds.json",
+                lastRefresh: nil,
+                executablePath: executable,
+                statusText: "Gemini CLI는 감지했지만 Google OAuth 자격증명은 아직 찾지 못했습니다."
+            )
+        }
+
+        return GeminiLocalSession(
+            state: .unavailable,
+            authMode: nil,
+            accountID: nil,
+            credentialLocation: nil,
+            lastRefresh: nil,
+            executablePath: nil,
+            statusText: "Gemini CLI 또는 로컬 자격증명을 찾지 못했습니다."
+        )
+    }
+
+    private static func detectOAuthSession(executablePath: String?) -> GeminiLocalSession? {
+        let authURL = geminiHome.appendingPathComponent("oauth_creds.json")
+        guard let data = try? Data(contentsOf: authURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        let hasOAuthToken = ["refresh_token", "access_token", "id_token"].contains { key in
+            guard let value = object[key] as? String else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        let accountID = detectActiveGoogleAccount()
+        let lastRefresh = fileModificationDate(authURL)
+        guard hasOAuthToken else {
+            return GeminiLocalSession(
+                state: .loggedOut,
+                authMode: "Google OAuth",
+                accountID: accountID,
+                credentialLocation: "~/.gemini/oauth_creds.json",
+                lastRefresh: lastRefresh,
+                executablePath: executablePath,
+                statusText: "Gemini OAuth 파일은 있지만 유효한 토큰을 찾지 못했습니다."
+            )
+        }
+
+        return GeminiLocalSession(
+            state: .loggedIn,
+            authMode: "Google OAuth",
+            accountID: accountID,
+            credentialLocation: "~/.gemini/oauth_creds.json",
+            lastRefresh: lastRefresh,
+            executablePath: executablePath,
+            statusText: "Gemini CLI Google OAuth 자격증명을 감지했습니다."
+        )
+    }
+
+    private static func detectActiveGoogleAccount() -> String? {
+        let accountsURL = geminiHome.appendingPathComponent("google_accounts.json")
+        guard let data = try? Data(contentsOf: accountsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        if let active = object["active"] as? String, !active.isEmpty {
+            return active
+        }
+        if let active = object["active"] as? [String: Any] {
+            return firstString(in: active, keys: ["email", "account", "id", "name"])
+        }
+        return firstString(in: object, keys: ["email", "account", "accountID", "userID"])
+    }
+
+    private static func findGeminiExecutable() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/.local/bin/gemini",
+            "/opt/homebrew/bin/gemini",
+            "/usr/local/bin/gemini"
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 }
 
@@ -481,6 +667,7 @@ enum CodexLocalSessionDetector {
 
 enum CursorLocalSessionDetector {
     static func detect(hasTeamKey: Bool) -> CursorLocalSession {
+        let cliPath = findCursorCLIExecutable()
         let appPath = findCursorApp()
         let supportPath = cursorSupportPath()
         if hasTeamKey {
@@ -490,20 +677,32 @@ enum CursorLocalSessionDetector {
                 accountID: nil,
                 credentialLocation: "ClaudeUsageMonitor Keychain",
                 lastRefresh: nil,
-                executablePath: appPath,
-                statusText: "앱에 저장된 Cursor Team API key를 감지했습니다."
+                executablePath: cliPath ?? appPath,
+                statusText: "앱에 저장된 Cursor Team API key를 감지했습니다. Cursor CLI 로그인과 별개의 팀 분석용 보조 자격증명입니다."
+            )
+        }
+
+        if let cliPath {
+            return CursorLocalSession(
+                state: .loggedOut,
+                authMode: "Cursor Agent CLI",
+                accountID: nil,
+                credentialLocation: "~/.cursor",
+                lastRefresh: nil,
+                executablePath: cliPath,
+                statusText: "Cursor Agent CLI를 감지했습니다. 로그인은 설정 화면의 CLI 로그인 버튼으로 실행합니다."
             )
         }
 
         if supportPath != nil || appPath != nil {
             return CursorLocalSession(
                 state: .loggedOut,
-                authMode: nil,
+                authMode: "Cursor App",
                 accountID: nil,
                 credentialLocation: supportPath ?? appPath,
                 lastRefresh: nil,
                 executablePath: appPath,
-                statusText: "Cursor 설치 또는 로컬 데이터는 감지했지만, 공식 사용량 수집용 Team API key는 없습니다."
+                statusText: "Cursor 앱 또는 로컬 데이터는 감지했지만 Cursor Agent CLI는 찾지 못했습니다."
             )
         }
 
@@ -530,6 +729,19 @@ enum CursorLocalSessionDetector {
     private static func cursorSupportPath() -> String? {
         let path = "\(NSHomeDirectory())/Library/Application Support/Cursor"
         return FileManager.default.fileExists(atPath: path) ? "~/Library/Application Support/Cursor" : nil
+    }
+
+    private static func findCursorCLIExecutable() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/.local/bin/agent",
+            "\(home)/.local/bin/cursor-agent",
+            "/opt/homebrew/bin/agent",
+            "/opt/homebrew/bin/cursor-agent",
+            "/usr/local/bin/agent",
+            "/usr/local/bin/cursor-agent"
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 }
 
@@ -570,4 +782,15 @@ private func firstString(in dictionary: [String: Any], keys: [String]) -> String
 private func environmentHasValue(_ key: String) -> Bool {
     guard let value = ProcessInfo.processInfo.environment[key] else { return false }
     return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+private func fileModificationDate(_ url: URL) -> Date? {
+    guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]) else { return nil }
+    return values.contentModificationDate
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
 }

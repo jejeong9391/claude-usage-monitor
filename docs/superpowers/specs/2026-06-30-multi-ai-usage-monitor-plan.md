@@ -23,10 +23,17 @@
 ### OpenAI / Codex
 
 - OpenAI API 사용량: OpenAI Usage API / Cost API를 사용한다.
-- Codex 제품 사용량: 공개 문서 기준 개인 ChatGPT/Codex quota를 프로그램으로 읽는 안정 API는 확인되지 않았다.
+- Codex 제품 사용량:
+  - 공식 quota 화면은 Codex TUI `/usage`와 `/status`에 있다.
+  - 메뉴바 앱은 `~/.codex/sessions/**/*.jsonl`의 `token_count.rate_limits` 이벤트를 읽어 5시간/주간 사용률, reset, 오늘 token usage를 집계한다.
+  - `~/.codex/state_5.sqlite`의 `threads.tokens_used`는 보조 모델/source 요약에만 사용한다.
+  - 공개 문서 기준 개인 ChatGPT/Codex quota를 외부 앱에서 직접 읽는 안정 REST API는 확인되지 않았다.
+  - Enterprise Analytics API는 workspace 관리자용 일/주 버킷 집계로 사용할 수 있지만, 개인 실시간 5시간 세션 reset 대체재는 아니다.
+  - 오픈소스 조사 결과 `codex-usage-tracker`, `usage`, `aiusage`, `tokscale`, `AgentLimits` 등이 있으며, 신뢰 가능한 로컬 방식은 Codex session JSONL의 `token_count`/`rate_limits` 파싱이다.
 - 표시 원칙:
   - OpenAI API 사용량과 Codex 제품 사용량을 분리한다.
-  - Codex 개인 사용량은 공식 API가 생길 때까지 `Not Available` 또는 수동 링크/안내 상태로 둔다.
+  - Codex는 5시간 사용률을 primary로 표시하고 주간 사용률, reset, 오늘 input/output/cache/reasoning token을 상세에 표시한다.
+  - Codex session 로그의 `rate_limits`는 Codex가 로컬에 남긴 서비스 스냅샷이므로 `Local Session` 출처로 표시하되, 공식 공개 API 호출로 오해시키지 않는다.
 
 ### Cursor
 
@@ -34,7 +41,8 @@
 - 주요 수치: request 수, token usage, charged cents, model, accepted lines, AI code tracking.
 - 표시 원칙:
   - 팀 API key가 있는 경우 `Official Admin`.
-  - 개인 계정 quota API가 없는 경우 개인용은 `Not Available`로 둔다.
+  - 로컬 Cursor 사용량은 `state.vscdb`의 `composerData`와 대화 header 수를 읽어 `Local Estimate`로 표시한다.
+  - 개인 계정 token/cost quota API가 없는 경우 token/cost는 표시하지 않는다.
 
 ## 공통 데이터 모델
 
@@ -85,7 +93,7 @@ struct ProviderSnapshot {
   - Claude: Claude Code OAuth Keychain 상태 + 선택적 Anthropic Admin key.
   - OpenAI API: Admin API key, Organization ID, Project ID.
   - Codex: 사용자가 계정 정보를 다시 입력하지 않는다. `~/.codex/auth.json` 또는 `codex login status`로 로컬 세션을 자동 감지하고, 공식 개인 usage API 미확인 상태는 별도로 표현한다.
-  - Cursor: Team API key, Team/Workspace 식별자.
+  - Cursor: 로컬 composer DB 기반 추정 사용량 + Team API key, Team/Workspace 식별자.
 - API key는 UserDefaults에 저장하지 않고 macOS Keychain에만 저장한다.
 - Organization ID, Project ID, Team ID처럼 비밀이 아닌 범위 설정만 UserDefaults에 저장한다.
 - 로그인/로그아웃 제어 범위:
@@ -93,13 +101,17 @@ struct ProviderSnapshot {
   - Anthropic/OpenAI/Cursor Admin 계정: API key 저장이 로그인, Keychain 삭제가 로그아웃이다.
   - Codex CLI: `codex login`/`codex logout` 하위 명령이 있으며, 앱에서는 로컬 세션 감지와 Codex 웹/앱 진입, CLI logout 실행까지만 연결한다.
 - 로컬 세션에서 감지한 토큰 값은 앱 상태에 저장하거나 UI에 표시하지 않는다. 표시 대상은 로그인 방식, 계정 ID, credential 위치, 마지막 갱신 시각 같은 메타데이터로 제한한다.
+- Codex는 예외적으로 session JSONL에 기록된 `token_count.rate_limits`와 `last_token_usage`를 사용량 화면에 표시한다. 이 값은 사용자의 credential/token 원문이 아니라 Codex가 남긴 사용량 카운터다.
 - 앱 실행, 활성화, 메뉴바 팝오버 열기, 수동 새로고침 시 로컬 세션을 자동 재감지한다.
 - 자동 감지 범위:
   - Claude: Claude Code macOS Keychain OAuth 또는 앱에 저장된 Anthropic Admin key.
   - OpenAI API: 앱 Keychain Admin key, `OPENAI_ADMIN_KEY`, `OPENAI_API_KEY` 같은 프로세스 환경변수.
   - Codex: `~/.codex/auth.json` 또는 `codex login status`.
   - Cursor: 앱 설치/로컬 데이터 존재, 앱 Keychain Cursor Team API key.
-- Cursor 로컬 DB, 브라우저 쿠키, 앱 내부 토큰처럼 공식 사용량 API 연결에 필요 없고 깨지기 쉬운 자격증명은 읽지 않는다.
+- 로컬 사용량 집계 범위:
+  - Codex: `sessions/**/*.jsonl`의 `token_count.rate_limits`, `last_token_usage`, `model_context_window`; `state_5.sqlite`의 model/source는 보조 요약.
+  - Cursor: `state.vscdb`의 `composerData` count, conversation header count.
+- 브라우저 쿠키, 앱 내부 private token처럼 공식 사용량 API 연결에 필요 없고 깨지기 쉬운 자격증명은 읽지 않는다.
 
 ### 메뉴바
 
@@ -157,7 +169,8 @@ struct ProviderSnapshot {
 
 - `UsageStore`를 multi-provider snapshot을 발행하도록 확장한다.
 - 기존 Claude 공식 + ccusage 동작을 그대로 `Claude` snapshot으로 매핑한다.
-- OpenAI API, Codex, Cursor는 아직 실제 호출하지 않고 `setupRequired` 또는 `unavailable` snapshot으로 표시한다.
+- OpenAI API는 아직 실제 호출하지 않고 `setupRequired` 또는 `configured` snapshot으로 표시한다.
+- Codex와 Cursor는 로컬 DB가 있으면 `Local Estimate` snapshot으로 표시한다.
 - 설정에서 메인 provider를 선택하고 UserDefaults에 저장한다.
 - 메뉴바 타이틀은 선택된 provider snapshot에서 계산한다.
 - 기존 Claude 카드 상세는 유지하되, 메인/목록 구조에 편입한다.
@@ -173,7 +186,7 @@ struct ProviderSnapshot {
 
 - Cursor team API key를 Keychain에서 읽는다.
 - Admin/Analytics API로 request, charged cents, token usage, model summary를 가져온다.
-- 개인 Cursor 계정만 있는 경우 공식 API 미지원 상태로 둔다.
+- 개인 Cursor 계정만 있는 경우 로컬 composer DB 기반 request 추정치를 표시하고 token/cost는 비워 둔다.
 
 ### 4단계: Anthropic Admin provider
 

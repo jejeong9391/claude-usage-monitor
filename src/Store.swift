@@ -5,11 +5,19 @@ import SwiftUI
 @MainActor
 final class UsageStore: ObservableObject {
     private static let primaryProviderDefaultsKey = "primaryAIProvider"
+    private static let providerOrderDefaultsKey = "providerTabOrder"
     private static let openAIOrganizationDefaultsKey = "openAIOrganizationID"
     private static let openAIProjectDefaultsKey = "openAIProjectID"
     private static let cursorTeamDefaultsKey = "cursorTeamID"
     private static let anthropicAdminWorkspaceDefaultsKey = "anthropicAdminWorkspaceID"
+    private static let officialMinimumInterval: TimeInterval = 120
+    private static let officialInitialBackoff: TimeInterval = 120
+    private static let officialMaxBackoff: TimeInterval = 900
     private let defaults: UserDefaults
+    private var refreshInFlight = false
+    private var officialCooldownUntil: Date?
+    private var officialBackoffSeconds = UsageStore.officialInitialBackoff
+    @Published var officialRetryAt: Date?
 
     // 공식 (진실의 원천). 성공값은 유지하고 상태만 따로 표시 → 오프라인 시 직전 값 노출.
     @Published var official: OfficialUsage?
@@ -22,19 +30,26 @@ final class UsageStore: ObservableObject {
     @Published var lastUpdate: Date = Date()
     @Published var loading: Bool = true
     @Published var primaryProvider: AIProviderKind
+    @Published var providerOrder: [AIProviderKind]
     @Published var snapshots: [ProviderSnapshot]
     @Published var openAIOrganizationID: String
     @Published var openAIProjectID: String
     @Published var cursorTeamID: String
     @Published var anthropicAdminWorkspaceID: String
     @Published var hasOpenAIAdminKey: Bool
+    @Published var hasGeminiAPIKey: Bool
     @Published var hasCursorTeamKey: Bool
     @Published var hasAnthropicAdminKey: Bool
     @Published var claudeLocalSession: ClaudeLocalSession
     @Published var openAILocalSession: OpenAILocalSession
+    @Published var geminiLocalSession: GeminiLocalSession
     @Published var codexLocalSession: CodexLocalSession
     @Published var cursorLocalSession: CursorLocalSession
+    @Published var openAIUsage: LocalUsageSummary?
+    @Published var codexUsage: LocalUsageSummary?
+    @Published var cursorUsage: LocalUsageSummary?
     @Published var settingsMessage: String?
+    @Published var settingsMessageProvider: AIProviderKind?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -44,56 +59,91 @@ final class UsageStore: ObservableObject {
         } else {
             self.primaryProvider = .claude
         }
+        self.providerOrder = Self.loadProviderOrder(defaults)
         self.openAIOrganizationID = defaults.string(forKey: Self.openAIOrganizationDefaultsKey) ?? ""
         self.openAIProjectID = defaults.string(forKey: Self.openAIProjectDefaultsKey) ?? ""
         self.cursorTeamID = defaults.string(forKey: Self.cursorTeamDefaultsKey) ?? ""
         self.anthropicAdminWorkspaceID = defaults.string(forKey: Self.anthropicAdminWorkspaceDefaultsKey) ?? ""
         let openAIKeyExists = SecretStore.exists(.openAIAdminKey)
+        let geminiKeyExists = SecretStore.exists(.geminiAPIKey)
         let cursorKeyExists = SecretStore.exists(.cursorTeamKey)
         let anthropicKeyExists = SecretStore.exists(.anthropicAdminKey)
         let localSessions = LocalSessionDetector.detectAll(
             hasOpenAIAdminKey: openAIKeyExists,
+            hasGeminiAPIKey: geminiKeyExists,
             hasCursorTeamKey: cursorKeyExists,
             hasAnthropicAdminKey: anthropicKeyExists
         )
+        let openAIUsage: LocalUsageSummary? = nil
+        let codexUsage: LocalUsageSummary? = nil
+        let cursorUsage: LocalUsageSummary? = nil
         self.hasOpenAIAdminKey = openAIKeyExists
+        self.hasGeminiAPIKey = geminiKeyExists
         self.hasCursorTeamKey = cursorKeyExists
         self.hasAnthropicAdminKey = anthropicKeyExists
         self.claudeLocalSession = localSessions.claude
         self.openAILocalSession = localSessions.openAI
+        self.geminiLocalSession = localSessions.gemini
         self.codexLocalSession = localSessions.codex
         self.cursorLocalSession = localSessions.cursor
+        self.openAIUsage = openAIUsage
+        self.codexUsage = codexUsage
+        self.cursorUsage = cursorUsage
         self.snapshots = UsageStore.placeholderSnapshots(
             updatedAt: nil,
             openAIConfigured: openAIKeyExists,
             openAILocalSession: localSessions.openAI,
+            openAIUsage: openAIUsage,
+            geminiConfigured: geminiKeyExists,
+            geminiLocalSession: localSessions.gemini,
             codexLocalSession: localSessions.codex,
+            codexUsage: codexUsage,
             cursorConfigured: cursorKeyExists,
-            cursorLocalSession: localSessions.cursor
+            cursorLocalSession: localSessions.cursor,
+            cursorUsage: cursorUsage
         )
     }
 
-    func refresh() {
+    func refresh(forceOfficial: Bool = false) {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+
+        let organizationID = openAIOrganizationID
+        let projectID = openAIProjectID
+        let teamID = cursorTeamID
+        let now = Date()
+        let shouldFetchOfficial = forceOfficial || officialCooldownUntil.map { now >= $0 } ?? true
+        let currentOfficialState = officialState
         Task.detached(priority: .userInitiated) { [weak self] in
-            let off = OfficialUsageProvider.fetch()
+            let off = shouldFetchOfficial ? OfficialUsageProvider.fetch() : currentOfficialState
             let block = CCUsageProvider.activeBlock()
             let wCost = CCUsageProvider.weeklyCost()
             let openAIKeyExists = SecretStore.exists(.openAIAdminKey)
+            let geminiKeyExists = SecretStore.exists(.geminiAPIKey)
             let cursorKeyExists = SecretStore.exists(.cursorTeamKey)
             let anthropicKeyExists = SecretStore.exists(.anthropicAdminKey)
             let localSessions = LocalSessionDetector.detectAll(
                 hasOpenAIAdminKey: openAIKeyExists,
+                hasGeminiAPIKey: geminiKeyExists,
                 hasCursorTeamKey: cursorKeyExists,
                 hasAnthropicAdminKey: anthropicKeyExists
             )
+            let openAIUsage = OpenAIUsageProvider.today(organizationID: organizationID, projectID: projectID)
+            let codexUsage = CodexUsageProvider.today()
+            let cursorUsage = CursorTeamUsageProvider.today(teamID: teamID)
             await self?.apply(
                 off: off,
                 block: block,
                 weeklyCost: wCost,
                 hasOpenAIAdminKey: openAIKeyExists,
+                hasGeminiAPIKey: geminiKeyExists,
                 hasCursorTeamKey: cursorKeyExists,
                 hasAnthropicAdminKey: anthropicKeyExists,
-                localSessions: localSessions
+                localSessions: localSessions,
+                openAIUsage: openAIUsage,
+                codexUsage: codexUsage,
+                cursorUsage: cursorUsage,
+                fetchedOfficial: shouldFetchOfficial
             )
         }
     }
@@ -103,21 +153,35 @@ final class UsageStore: ObservableObject {
         block: Block?,
         weeklyCost: Double?,
         hasOpenAIAdminKey: Bool,
+        hasGeminiAPIKey: Bool,
         hasCursorTeamKey: Bool,
         hasAnthropicAdminKey: Bool,
-        localSessions: LocalSessionSnapshot
+        localSessions: LocalSessionSnapshot,
+        openAIUsage: LocalUsageSummary?,
+        codexUsage: LocalUsageSummary?,
+        cursorUsage: LocalUsageSummary?,
+        fetchedOfficial: Bool
     ) {
+        refreshInFlight = false
+        if fetchedOfficial {
+            updateOfficialCooldown(after: off)
+        }
         officialState = off
         if case let .ok(usage) = off { official = usage }
         self.block = block
         self.weeklyCost = weeklyCost
         self.hasOpenAIAdminKey = hasOpenAIAdminKey
+        self.hasGeminiAPIKey = hasGeminiAPIKey
         self.hasCursorTeamKey = hasCursorTeamKey
         self.hasAnthropicAdminKey = hasAnthropicAdminKey
         self.claudeLocalSession = localSessions.claude
         self.openAILocalSession = localSessions.openAI
+        self.geminiLocalSession = localSessions.gemini
         self.codexLocalSession = localSessions.codex
         self.cursorLocalSession = localSessions.cursor
+        self.openAIUsage = openAIUsage
+        self.codexUsage = codexUsage
+        self.cursorUsage = cursorUsage
         lastUpdate = Date()
         loading = false
         snapshots = Self.makeSnapshots(
@@ -126,17 +190,65 @@ final class UsageStore: ObservableObject {
             block: block,
             openAIConfigured: hasOpenAIAdminKey,
             openAILocalSession: localSessions.openAI,
+            openAIUsage: openAIUsage,
+            geminiConfigured: hasGeminiAPIKey,
+            geminiLocalSession: localSessions.gemini,
             codexLocalSession: localSessions.codex,
+            codexUsage: codexUsage,
             cursorConfigured: hasCursorTeamKey,
             cursorLocalSession: localSessions.cursor,
+            cursorUsage: cursorUsage,
             loading: loading,
             updatedAt: lastUpdate
         )
     }
 
+    private func updateOfficialCooldown(after result: OfficialResult) {
+        let now = Date()
+        switch result {
+        case .ok(let usage):
+            let nextRegularRefresh = now.addingTimeInterval(Self.officialMinimumInterval)
+            if let reset = parseDate(usage.fiveHour?.resetsAt), reset > now {
+                officialCooldownUntil = min(nextRegularRefresh, reset.addingTimeInterval(3))
+            } else {
+                officialCooldownUntil = now.addingTimeInterval(30)
+            }
+            officialBackoffSeconds = Self.officialInitialBackoff
+            officialRetryAt = nil
+        case .rateLimited:
+            let interval = official == nil ? min(officialBackoffSeconds, 60) : officialBackoffSeconds
+            let retryAt = now.addingTimeInterval(interval)
+            officialCooldownUntil = retryAt
+            officialRetryAt = retryAt
+            officialBackoffSeconds = min(officialBackoffSeconds * 2, Self.officialMaxBackoff)
+        case .offline:
+            officialCooldownUntil = now.addingTimeInterval(60)
+            officialRetryAt = nil
+        case .noToken, .unauthorized, .loading:
+            officialCooldownUntil = nil
+            officialRetryAt = nil
+        }
+    }
+
     func setPrimaryProvider(_ provider: AIProviderKind) {
         primaryProvider = provider
         defaults.set(provider.rawValue, forKey: Self.primaryProviderDefaultsKey)
+    }
+
+    func moveProviderTab(_ source: AIProviderKind, to target: AIProviderKind) {
+        guard source != target,
+              let from = providerOrder.firstIndex(of: source),
+              let to = providerOrder.firstIndex(of: target)
+        else {
+            return
+        }
+
+        var order = providerOrder
+        let item = order.remove(at: from)
+        let insertionIndex = min(to, order.count)
+        order.insert(item, at: insertionIndex)
+        providerOrder = Self.normalizedProviderOrder(order)
+        defaults.set(providerOrder.map(\.rawValue), forKey: Self.providerOrderDefaultsKey)
     }
 
     var primarySnapshot: ProviderSnapshot {
@@ -146,9 +258,14 @@ final class UsageStore: ObservableObject {
             updatedAt: lastUpdate,
             openAIConfigured: hasOpenAIAdminKey,
             openAILocalSession: openAILocalSession,
+            openAIUsage: openAIUsage,
+            geminiConfigured: hasGeminiAPIKey,
+            geminiLocalSession: geminiLocalSession,
             codexLocalSession: codexLocalSession,
+            codexUsage: codexUsage,
             cursorConfigured: hasCursorTeamKey,
-            cursorLocalSession: cursorLocalSession
+            cursorLocalSession: cursorLocalSession,
+            cursorUsage: cursorUsage
         )[0]
     }
 
@@ -179,17 +296,30 @@ final class UsageStore: ObservableObject {
     func saveSecret(_ kind: ProviderSecretKind, value: String) {
         let ok = SecretStore.save(kind, value: value)
         refreshSecretStatus()
-        settingsMessage = ok ? "\(kind.displayName) 저장됨" : "\(kind.displayName) 저장 실패"
+        setSettingsMessage(ok ? "\(kind.displayName) 저장됨" : "\(kind.displayName) 저장 실패", provider: kind.provider)
+        if ok { refresh() }
     }
 
     func deleteSecret(_ kind: ProviderSecretKind) {
         let ok = SecretStore.delete(kind)
         refreshSecretStatus()
-        settingsMessage = ok ? "\(kind.displayName) 삭제됨" : "\(kind.displayName) 삭제할 항목 없음"
+        setSettingsMessage(ok ? "\(kind.displayName) 삭제됨" : "\(kind.displayName) 삭제할 항목 없음", provider: kind.provider)
+        if ok { refresh() }
+    }
+
+    func setSettingsMessage(_ message: String, provider: AIProviderKind? = nil) {
+        settingsMessage = message
+        settingsMessageProvider = provider
+    }
+
+    func clearSettingsMessage() {
+        settingsMessage = nil
+        settingsMessageProvider = nil
     }
 
     func refreshSecretStatus() {
         hasOpenAIAdminKey = SecretStore.exists(.openAIAdminKey)
+        hasGeminiAPIKey = SecretStore.exists(.geminiAPIKey)
         hasCursorTeamKey = SecretStore.exists(.cursorTeamKey)
         hasAnthropicAdminKey = SecretStore.exists(.anthropicAdminKey)
         refreshLocalSessions()
@@ -198,40 +328,53 @@ final class UsageStore: ObservableObject {
     func refreshLocalSessions() {
         let localSessions = LocalSessionDetector.detectAll(
             hasOpenAIAdminKey: hasOpenAIAdminKey,
+            hasGeminiAPIKey: hasGeminiAPIKey,
             hasCursorTeamKey: hasCursorTeamKey,
             hasAnthropicAdminKey: hasAnthropicAdminKey
         )
         claudeLocalSession = localSessions.claude
         openAILocalSession = localSessions.openAI
+        geminiLocalSession = localSessions.gemini
         codexLocalSession = localSessions.codex
         cursorLocalSession = localSessions.cursor
+        openAIUsage = nil
+        codexUsage = CodexUsageProvider.today()
+        cursorUsage = CursorUsageProvider.today()
         rebuildSnapshots()
     }
 
-    // 메뉴바 타이틀: "🔥 58% · 2h41m"
+    // 메뉴바 타이틀은 설정된 기본 AI의 snapshot 포맷을 그대로 따른다.
     var menuBarTitle: String {
-        if primaryProvider != .claude {
-            return snapshot(for: primaryProvider)?.menuBarTitle ?? primaryProvider.menuName
+        if primaryProvider == .claude,
+           let fiveHour = official?.fiveHour {
+            let pct = Int(fiveHourDisplayUtilization(fiveHour).rounded())
+            let remaining = compactRemaining(until: fiveHourDisplayReset(fiveHour))
+            return "🔥 \(pct)% · \(remaining)"
         }
-        return claudeMenuBarTitle
-    }
-
-    private var claudeMenuBarTitle: String {
-        switch officialState {
-        case .noToken: return "🔒 로그인"
-        case .rateLimited where official?.fiveHour == nil: return "⏳"  // 일시적 호출 제한
-        default: break
-        }
-        guard let fh = official?.fiveHour else {
-            return officialState.isError ? "⚠︎" : "…"  // .loading → "…"
-        }
-        let pct = Int(fh.utilization.rounded())
-        let countdown = compactRemaining(until: parseDate(fh.resetsAt))
-        return "🔥 \(pct)% · \(countdown)"
+        return primarySnapshot.menuBarTitle
     }
 }
 
 private extension UsageStore {
+    static func loadProviderOrder(_ defaults: UserDefaults) -> [AIProviderKind] {
+        normalizedProviderOrder(
+            defaults.stringArray(forKey: providerOrderDefaultsKey)?
+                .compactMap(AIProviderKind.init(rawValue:)) ?? []
+        )
+    }
+
+    static func normalizedProviderOrder(_ candidates: [AIProviderKind]) -> [AIProviderKind] {
+        let defaultOrder: [AIProviderKind] = [.claude, .codex, .cursor, .gemini, .openAI]
+        var seen = Set<AIProviderKind>()
+        var result: [AIProviderKind] = []
+        for provider in candidates + defaultOrder where provider != .openAI && !seen.contains(provider) {
+            seen.insert(provider)
+            result.append(provider)
+        }
+        result.append(.openAI)
+        return result
+    }
+
     func rebuildSnapshots() {
         snapshots = Self.makeSnapshots(
             official: official,
@@ -239,9 +382,14 @@ private extension UsageStore {
             block: block,
             openAIConfigured: hasOpenAIAdminKey,
             openAILocalSession: openAILocalSession,
+            openAIUsage: openAIUsage,
+            geminiConfigured: hasGeminiAPIKey,
+            geminiLocalSession: geminiLocalSession,
             codexLocalSession: codexLocalSession,
+            codexUsage: codexUsage,
             cursorConfigured: hasCursorTeamKey,
             cursorLocalSession: cursorLocalSession,
+            cursorUsage: cursorUsage,
             loading: loading,
             updatedAt: lastUpdate
         )
@@ -251,9 +399,14 @@ private extension UsageStore {
         updatedAt: Date?,
         openAIConfigured: Bool,
         openAILocalSession: OpenAILocalSession,
+        openAIUsage: LocalUsageSummary?,
+        geminiConfigured: Bool,
+        geminiLocalSession: GeminiLocalSession,
         codexLocalSession: CodexLocalSession,
+        codexUsage: LocalUsageSummary?,
         cursorConfigured: Bool,
-        cursorLocalSession: CursorLocalSession
+        cursorLocalSession: CursorLocalSession,
+        cursorUsage: LocalUsageSummary?
     ) -> [ProviderSnapshot] {
         [
             ProviderSnapshot(
@@ -274,9 +427,10 @@ private extension UsageStore {
                 modelSummary: nil,
                 updatedAt: updatedAt
             ),
-            openAISnapshot(updatedAt: updatedAt, configured: openAIConfigured, localSession: openAILocalSession),
-            codexSnapshot(localSession: codexLocalSession, updatedAt: updatedAt),
-            cursorSnapshot(updatedAt: updatedAt, configured: cursorConfigured, localSession: cursorLocalSession)
+            codexSnapshot(localSession: codexLocalSession, localUsage: codexUsage, updatedAt: updatedAt),
+            cursorSnapshot(updatedAt: updatedAt, configured: cursorConfigured, localSession: cursorLocalSession, localUsage: cursorUsage),
+            geminiSnapshot(updatedAt: updatedAt, configured: geminiConfigured, localSession: geminiLocalSession),
+            openAISnapshot(updatedAt: updatedAt, configured: openAIConfigured, localSession: openAILocalSession, localUsage: openAIUsage)
         ]
     }
 
@@ -286,9 +440,14 @@ private extension UsageStore {
         block: Block?,
         openAIConfigured: Bool,
         openAILocalSession: OpenAILocalSession,
+        openAIUsage: LocalUsageSummary?,
+        geminiConfigured: Bool,
+        geminiLocalSession: GeminiLocalSession,
         codexLocalSession: CodexLocalSession,
+        codexUsage: LocalUsageSummary?,
         cursorConfigured: Bool,
         cursorLocalSession: CursorLocalSession,
+        cursorUsage: LocalUsageSummary?,
         loading: Bool,
         updatedAt: Date
     ) -> [ProviderSnapshot] {
@@ -300,9 +459,10 @@ private extension UsageStore {
                 loading: loading,
                 updatedAt: updatedAt
             ),
-            openAISnapshot(updatedAt: updatedAt, configured: openAIConfigured, localSession: openAILocalSession),
-            codexSnapshot(localSession: codexLocalSession, updatedAt: updatedAt),
-            cursorSnapshot(updatedAt: updatedAt, configured: cursorConfigured, localSession: cursorLocalSession)
+            codexSnapshot(localSession: codexLocalSession, localUsage: codexUsage, updatedAt: updatedAt),
+            cursorSnapshot(updatedAt: updatedAt, configured: cursorConfigured, localSession: cursorLocalSession, localUsage: cursorUsage),
+            geminiSnapshot(updatedAt: updatedAt, configured: geminiConfigured, localSession: geminiLocalSession),
+            openAISnapshot(updatedAt: updatedAt, configured: openAIConfigured, localSession: openAILocalSession, localUsage: openAIUsage)
         ]
     }
 
@@ -313,15 +473,16 @@ private extension UsageStore {
         loading: Bool,
         updatedAt: Date
     ) -> ProviderSnapshot {
-        let reset = parseDate(official?.fiveHour?.resetsAt)
+        let reset = fiveHourDisplayReset(official?.fiveHour)
+        let isExpiredFiveHour = fiveHourWindowExpired(official?.fiveHour)
         let primary: UsageMetric
         if let fiveHour = official?.fiveHour {
-            primary = .percent(fiveHour.utilization)
+            primary = .percent(fiveHourDisplayUtilization(fiveHour))
         } else {
             primary = .status(claudeStatusText(for: officialState, loading: loading))
         }
 
-        let state = claudeProviderState(official: official, officialState: officialState, loading: loading)
+        let state = claudeProviderState(official: official, officialState: officialState, loading: loading, expiredFiveHour: isExpiredFiveHour)
         let sourceKind: UsageSourceKind = state == .setupRequired ? .setupRequired : .officialPersonal
         let confidence: UsageConfidence
         switch state {
@@ -348,7 +509,9 @@ private extension UsageStore {
             sourceKind: sourceKind,
             confidence: confidence,
             state: state,
-            stateMessage: claudeStateMessage(for: officialState, hasOfficial: official != nil, loading: loading),
+            stateMessage: isExpiredFiveHour
+                ? "직전 5시간 공식 창이 종료되어 새 세션을 0%로 표시합니다. 다음 공식 갱신에서 실제 값을 다시 맞춥니다."
+                : claudeStateMessage(for: officialState, hasOfficial: official != nil, loading: loading),
             period: .fiveHour,
             primary: primary,
             resetAt: reset,
@@ -365,9 +528,11 @@ private extension UsageStore {
     static func claudeProviderState(
         official: OfficialUsage?,
         officialState: OfficialResult,
-        loading: Bool
+        loading: Bool,
+        expiredFiveHour: Bool = false
     ) -> ProviderState {
         if loading { return .loading }
+        if expiredFiveHour, official != nil { return .stale }
         switch officialState {
         case .ok:
             return .ready
@@ -414,7 +579,75 @@ private extension UsageStore {
         }
     }
 
-    static func openAISnapshot(updatedAt: Date?, configured: Bool, localSession: OpenAILocalSession) -> ProviderSnapshot {
+    static func geminiSnapshot(updatedAt: Date?, configured: Bool, localSession: GeminiLocalSession) -> ProviderSnapshot {
+        if localSession.isLoggedIn {
+            let isCLI = localSession.authModeLabel == "Google OAuth"
+            return ProviderSnapshot(
+                provider: .gemini,
+                title: AIProviderKind.gemini.displayName,
+                sourceKind: .localSession,
+                confidence: isCLI ? .localDetected : .configured,
+                state: isCLI ? .ready : .configured,
+                stateMessage: isCLI
+                    ? "Gemini CLI Google OAuth 로그인을 감지했습니다. 세션 사용량은 Gemini CLI 로컬 로그와 /stats 기준으로 연결합니다."
+                    : "Gemini API key를 감지했습니다. CLI OAuth가 없을 때의 보조 자격증명이며, 직접 호출하지 않은 Gemini CLI 과거 사용량을 대체하지 않습니다.",
+                period: .today,
+                primary: .status(isCLI ? "로그인됨" : "키 저장됨"),
+                resetAt: nil,
+                costUSD: nil,
+                inputTokens: nil,
+                outputTokens: nil,
+                totalTokens: nil,
+                requestCount: nil,
+                modelSummary: localSession.authModeLabel,
+                updatedAt: updatedAt
+            )
+        }
+        switch localSession.state {
+        case .loggedOut:
+            return ProviderSnapshot.setupRequired(
+                provider: .gemini,
+                period: .today,
+                message: "Gemini CLI는 감지했지만 Google OAuth 로그인이 없습니다. 터미널에서 gemini를 실행한 뒤 Sign in with Google 또는 /auth로 로그인하세요.",
+                updatedAt: updatedAt
+            )
+        case .unavailable:
+            return ProviderSnapshot.unavailable(
+                provider: .gemini,
+                message: "Gemini CLI 또는 로컬 OAuth 자격증명을 감지하지 못했습니다.",
+                updatedAt: updatedAt
+            )
+        case .loggedIn:
+            return ProviderSnapshot.setupRequired(
+                provider: .gemini,
+                period: .today,
+                message: "Gemini CLI 로그인 상태를 다시 확인하세요.",
+                updatedAt: updatedAt
+            )
+        }
+    }
+
+    static func openAISnapshot(updatedAt: Date?, configured: Bool, localSession: OpenAILocalSession, localUsage: LocalUsageSummary?) -> ProviderSnapshot {
+        if let localUsage {
+            return ProviderSnapshot(
+                provider: .openAI,
+                title: AIProviderKind.openAI.displayName,
+                sourceKind: localUsage.sourceKind,
+                confidence: localUsage.confidence,
+                state: .ready,
+                stateMessage: localUsage.stateMessage,
+                period: localUsage.period,
+                primary: localUsage.primary,
+                resetAt: localUsage.primaryResetAt,
+                costUSD: localUsage.costUSD,
+                inputTokens: localUsage.inputTokens,
+                outputTokens: localUsage.outputTokens,
+                totalTokens: localUsage.totalTokens,
+                requestCount: localUsage.requestCount,
+                modelSummary: localUsage.modelSummary,
+                updatedAt: localUsage.updatedAt ?? updatedAt
+            )
+        }
         if configured {
             return ProviderSnapshot(
                 provider: .openAI,
@@ -422,7 +655,7 @@ private extension UsageStore {
                 sourceKind: .officialAdmin,
                 confidence: .configured,
                 state: .configured,
-                stateMessage: "OpenAI Admin API key가 Keychain에 저장되어 있습니다. Usage/Cost API 수집기를 연결하면 공식 API 사용량을 표시합니다.",
+                stateMessage: "OpenAI Admin API key가 Keychain에 저장되어 있지만 이번 갱신에서 Usage/Cost API 응답을 받지 못했습니다.",
                 period: .today,
                 primary: .status("설정됨"),
                 resetAt: nil,
@@ -463,16 +696,36 @@ private extension UsageStore {
         )
     }
 
-    static func codexSnapshot(localSession: CodexLocalSession, updatedAt: Date?) -> ProviderSnapshot {
+    static func codexSnapshot(localSession: CodexLocalSession, localUsage: LocalUsageSummary?, updatedAt: Date?) -> ProviderSnapshot {
         switch localSession.state {
         case .loggedIn:
+            if let localUsage {
+                return ProviderSnapshot(
+                    provider: .codex,
+                    title: AIProviderKind.codex.displayName,
+                    sourceKind: localUsage.sourceKind,
+                    confidence: localUsage.confidence,
+                    state: .ready,
+                    stateMessage: localUsage.stateMessage,
+                    period: localUsage.period,
+                    primary: localUsage.primary,
+                    resetAt: localUsage.primaryResetAt,
+                    costUSD: localUsage.costUSD,
+                    inputTokens: localUsage.inputTokens,
+                    outputTokens: localUsage.outputTokens,
+                    totalTokens: localUsage.totalTokens,
+                    requestCount: localUsage.requestCount,
+                    modelSummary: localUsage.modelSummary,
+                    updatedAt: localUsage.updatedAt ?? updatedAt
+                )
+            }
             return ProviderSnapshot(
                 provider: .codex,
                 title: AIProviderKind.codex.displayName,
                 sourceKind: .localSession,
                 confidence: .localDetected,
                 state: .ready,
-                stateMessage: "로컬 Codex 로그인을 감지했습니다. 다만 공개 공식 API로 개인 Codex/ChatGPT 사용량 quota를 안정적으로 읽는 방법은 확인되지 않아 OpenAI API 사용량과 분리합니다.",
+                stateMessage: "로컬 Codex 로그인을 감지했습니다. 아직 로컬 session 로그 사용량을 찾지 못했습니다.",
                 period: .none,
                 primary: .status("로그인됨"),
                 resetAt: nil,
@@ -500,7 +753,27 @@ private extension UsageStore {
         }
     }
 
-    static func cursorSnapshot(updatedAt: Date?, configured: Bool, localSession: CursorLocalSession) -> ProviderSnapshot {
+    static func cursorSnapshot(updatedAt: Date?, configured: Bool, localSession: CursorLocalSession, localUsage: LocalUsageSummary?) -> ProviderSnapshot {
+        if let localUsage {
+            return ProviderSnapshot(
+                provider: .cursor,
+                title: AIProviderKind.cursor.displayName,
+                sourceKind: localUsage.sourceKind,
+                confidence: localUsage.confidence,
+                state: .ready,
+                stateMessage: localUsage.stateMessage,
+                period: localUsage.period,
+                primary: localUsage.primary,
+                resetAt: localUsage.primaryResetAt,
+                costUSD: localUsage.costUSD,
+                inputTokens: nil,
+                outputTokens: nil,
+                totalTokens: localUsage.totalTokens,
+                requestCount: localUsage.requestCount,
+                modelSummary: localUsage.modelSummary,
+                updatedAt: localUsage.updatedAt ?? updatedAt
+            )
+        }
         if configured {
             return ProviderSnapshot(
                 provider: .cursor,
@@ -508,9 +781,9 @@ private extension UsageStore {
                 sourceKind: .officialAdmin,
                 confidence: .configured,
                 state: .configured,
-                stateMessage: "Cursor Team API key가 Keychain에 저장되어 있습니다. Admin/Analytics 수집기를 연결하면 팀 사용량을 표시합니다.",
+                stateMessage: "Cursor Team API key가 Keychain에 저장되어 있습니다. CLI 로그인과는 별개인 팀 분석용 보조 자격증명입니다.",
                 period: .month,
-                primary: .status("설정됨"),
+                primary: .status("키 저장됨"),
                 resetAt: nil,
                 costUSD: nil,
                 inputTokens: nil,
@@ -528,9 +801,11 @@ private extension UsageStore {
                 sourceKind: .localSession,
                 confidence: .localDetected,
                 state: .setupRequired,
-                stateMessage: "Cursor 로컬 설치 또는 데이터는 감지했습니다. 공식 사용량 수집은 Team API key가 필요합니다.",
+                stateMessage: localSession.executablePath == nil
+                    ? "Cursor 로컬 데이터는 감지했지만 Cursor Agent CLI는 찾지 못했습니다. Cursor CLI 설치 후 로그인하세요."
+                    : "Cursor Agent CLI는 감지했습니다. 설정에서 CLI 로그인 버튼을 눌러 agent login 또는 cursor-agent login을 실행하세요.",
                 period: .month,
-                primary: .status("Team key 필요"),
+                primary: .status("CLI 로그인"),
                 resetAt: nil,
                 costUSD: nil,
                 inputTokens: nil,
@@ -544,7 +819,7 @@ private extension UsageStore {
         return ProviderSnapshot.setupRequired(
             provider: .cursor,
             period: .month,
-            message: "Cursor 팀 API key가 있으면 공식 Admin/Analytics API로 request, token, 비용을 집계할 수 있습니다.",
+            message: "Cursor Agent CLI 또는 Cursor 로컬 데이터를 감지하지 못했습니다. Cursor CLI 설치와 로그인을 먼저 진행하세요.",
             updatedAt: updatedAt
         )
     }

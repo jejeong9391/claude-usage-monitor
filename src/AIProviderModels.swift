@@ -2,38 +2,33 @@ import Foundation
 
 enum AIProviderKind: String, CaseIterable, Identifiable, Hashable {
     case claude
-    case openAI
     case codex
     case cursor
+    case gemini
+    case openAI
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .claude: return "Claude"
-        case .openAI: return "OpenAI API"
         case .codex: return "Codex"
         case .cursor: return "Cursor"
+        case .gemini: return "Gemini"
+        case .openAI: return "OpenAI API"
         }
     }
 
     var menuName: String {
         switch self {
         case .claude: return "Claude"
-        case .openAI: return "OpenAI"
         case .codex: return "Codex"
         case .cursor: return "Cursor"
+        case .gemini: return "Gemini"
+        case .openAI: return "OpenAI"
         }
     }
 
-    var symbolName: String {
-        switch self {
-        case .claude: return "flame.fill"
-        case .openAI: return "sparkles"
-        case .codex: return "terminal.fill"
-        case .cursor: return "cursorarrow.click.2"
-        }
-    }
 }
 
 enum UsageSourceKind: Equatable {
@@ -203,7 +198,9 @@ struct ProviderSnapshot: Identifiable, Equatable {
         case .configured:
             return "\(provider.menuName) 설정됨"
         case .ready, .stale:
-            return "\(provider.menuName) \(primary.menuText)"
+            let reset = compactRemaining(until: resetAt)
+            let suffix = reset == "—" ? "" : " · \(reset)"
+            return "🔥 \(primary.menuText)\(suffix)"
         }
     }
 

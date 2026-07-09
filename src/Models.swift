@@ -43,6 +43,29 @@ struct OfficialUsage: Decodable {
     }
 }
 
+private let fiveHourWindowSeconds: TimeInterval = 5 * 60 * 60
+
+func fiveHourDisplayUtilization(_ window: UsageWindow?, now: Date = Date()) -> Double {
+    guard let window else { return 0 }
+    guard let reset = parseDate(window.resetsAt), reset <= now else {
+        return window.utilization
+    }
+    return 0
+}
+
+func fiveHourDisplayReset(_ window: UsageWindow?, now: Date = Date()) -> Date? {
+    guard var reset = parseDate(window?.resetsAt) else { return nil }
+    while reset <= now {
+        reset = reset.addingTimeInterval(fiveHourWindowSeconds)
+    }
+    return reset
+}
+
+func fiveHourWindowExpired(_ window: UsageWindow?, now: Date = Date()) -> Bool {
+    guard let reset = parseDate(window?.resetsAt) else { return false }
+    return reset <= now
+}
+
 // MARK: - ccusage 모델 (비용·토큰·burn 상세 전용)
 
 struct TokenCounts: Decodable {
