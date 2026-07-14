@@ -18,7 +18,12 @@
 - 로그 파일 상한: **256KB × 2파일**(`monitor.log`, `monitor.log.1`).
 - 텔레메트리 전송 조건: **상태 전이 시 + 세션 최초 1건**. 60초 폴링마다 보내지 않음.
 - 파일 I/O·네트워크 실패는 `try?`/무시로 **앱 동작에 절대 영향 없음**.
-- 테스트: 이 repo는 XCTest 타깃이 없다. **순수 함수는 `tests/*.swift`를 관련 `src` 파일과 함께 `swiftc`로 컴파일해 실행**(top-level 코드가 PASS/FAIL 출력). UI/파일 I/O는 build.sh 빌드 + 런타임 확인.
+- 테스트: 이 repo는 XCTest 타깃이 없다. **순수 함수는 `tests/*.swift`(top-level 코드로 PASS/FAIL 출력)를 관련 `src` 파일과 함께 `swiftc`로 컴파일해 실행**한다. **중요 — Swift는 여러 파일 동시 컴파일 시 top-level 문장을 `main.swift`라는 이름의 파일에서만 허용한다.** 따라서 실행 시 테스트 파일을 임시 `main.swift`로 복사해 컴파일한다:
+  ```bash
+  d=$(mktemp -d); cp tests/<NAME>.swift "$d/main.swift"
+  swiftc "$d/main.swift" <deps...> [-framework CFNetwork] -o "$d/t" && "$d/t"
+  ```
+  (커밋되는 파일명은 `tests/<NAME>.swift` 그대로 두고, 복사본만 `main.swift`로 쓴다.) UI/파일 I/O는 `build.sh` 빌드 + 런타임 확인.
 
 ---
 
