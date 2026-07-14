@@ -904,6 +904,7 @@ struct PopoverView: View {
             inlineStatus("설정 변경", message, "checkmark.circle", Theme.success)
         }
         settingsDetail(for: settingsProvider)
+        diagnosticsSettings
     }
 
     var isSettingsMessageVisible: Bool {
@@ -1326,6 +1327,53 @@ struct PopoverView: View {
                 }
             }
         }
+    }
+
+    var diagnosticsSettings: some View {
+        Card("진단") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: Binding(
+                    get: { store.telemetryEnabled },
+                    set: { store.setTelemetryEnabled($0) }
+                )) {
+                    Text("익명 사용 진단 보내기")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Theme.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                SettingsHint("문제 발생률·환경(프록시 등)만 익명으로 집계합니다. 토큰·사용량 내용은 전송하지 않습니다.")
+
+                Divider().background(Color.white.opacity(0.06))
+
+                Toggle(isOn: Binding(
+                    get: { store.diagnosticLoggingEnabled },
+                    set: { store.setDiagnosticLoggingEnabled($0) }
+                )) {
+                    Text("로컬 진단 로그 기록")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Theme.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+
+                HStack {
+                    AuthButton(
+                        symbol: "folder",
+                        title: "로그 폴더 열기",
+                        color: Theme.textSecondary,
+                        action: openDiagnosticLogFolder
+                    )
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    func openDiagnosticLogFolder() {
+        let dir = DiagnosticLog.directoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dir)
     }
 
     var settingsReviewCard: some View {

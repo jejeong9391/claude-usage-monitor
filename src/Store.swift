@@ -51,9 +51,14 @@ final class UsageStore: ObservableObject {
     @Published var cursorUsage: LocalUsageSummary?
     @Published var settingsMessage: String?
     @Published var settingsMessageProvider: AIProviderKind?
+    @Published var telemetryEnabled: Bool
+    @Published var diagnosticLoggingEnabled: Bool
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.telemetryEnabled = defaults.object(forKey: Telemetry.defaultsKey) == nil
+            ? true : defaults.bool(forKey: Telemetry.defaultsKey)
+        self.diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLog.defaultsKey)
         if let saved = defaults.string(forKey: Self.primaryProviderDefaultsKey),
            let provider = AIProviderKind(rawValue: saved) {
             self.primaryProvider = provider
@@ -307,6 +312,16 @@ final class UsageStore: ObservableObject {
     func setAnthropicAdminWorkspaceID(_ value: String) {
         anthropicAdminWorkspaceID = value
         defaults.set(value, forKey: Self.anthropicAdminWorkspaceDefaultsKey)
+    }
+
+    func setTelemetryEnabled(_ on: Bool) {
+        telemetryEnabled = on
+        defaults.set(on, forKey: Telemetry.defaultsKey)
+    }
+
+    func setDiagnosticLoggingEnabled(_ on: Bool) {
+        diagnosticLoggingEnabled = on
+        defaults.set(on, forKey: DiagnosticLog.defaultsKey)
     }
 
     func saveSecret(_ kind: ProviderSecretKind, value: String) {
