@@ -56,12 +56,71 @@ enum OfficialResult {
     case offline        // 네트워크/기타 실패
 }
 
+extension OfficialResult {
+    /// 텔레메트리/로그/전이감지용 안정 문자열 (associated value 제외).
+    var telemetryName: String {
+        switch self {
+        case .ok: return "ok"
+        case .loading: return "loading"
+        case .noToken: return "noToken"
+        case .unauthorized: return "unauthorized"
+        case .rateLimited: return "rateLimited"
+        case .offline: return "offline"
+        }
+    }
+}
+
+struct OfficialFetchDiagnostics {
+    var httpStatus: Int?
+    var urlErrorCode: Int?
+    var urlErrorDesc: String?
+    var decodeFailed: Bool = false
+    var bodyWasErrorObject: Bool = false
+}
+
+struct OfficialFetchOutcome {
+    let result: OfficialResult
+    let diagnostics: OfficialFetchDiagnostics
+}
+
+/// 순수 분류: 응답을 OfficialResult + 진단정보로 변환. 네트워크 호출 없음(테스트 가능).
+func classifyOfficialResponse(data: Data?, httpStatus: Int?, error: Error?) -> OfficialFetchOutcome {
+    var d = OfficialFetchDiagnostics()
+    d.httpStatus = httpStatus
+
+    guard let status = httpStatus else {
+        if let urlErr = error as? URLError {
+            d.urlErrorCode = urlErr.errorCode
+            d.urlErrorDesc = urlErr.localizedDescription
+        }
+        return OfficialFetchOutcome(result: .offline, diagnostics: d)
+    }
+    if status == 401 { return OfficialFetchOutcome(result: .unauthorized, diagnostics: d) }
+    if status == 429 { return OfficialFetchOutcome(result: .rateLimited, diagnostics: d) }
+    guard (200..<300).contains(status), let data = data else {
+        return OfficialFetchOutcome(result: .offline, diagnostics: d)
+    }
+    if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let err = obj["error"] as? [String: Any] {
+        d.bodyWasErrorObject = true
+        let isRate = (err["type"] as? String) == "rate_limit_error"
+        return OfficialFetchOutcome(result: isRate ? .rateLimited : .offline, diagnostics: d)
+    }
+    guard let usage = try? JSONDecoder().decode(OfficialUsage.self, from: data) else {
+        d.decodeFailed = true
+        return OfficialFetchOutcome(result: .offline, diagnostics: d)
+    }
+    return OfficialFetchOutcome(result: .ok(usage), diagnostics: d)
+}
+
 enum OfficialUsageProvider {
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
     /// 동기 호출 (refresh 의 Task.detached 내부에서 사용).
-    static func fetch() -> OfficialResult {
-        guard let token = KeychainToken.read() else { return .noToken }
+    static func fetch() -> OfficialFetchOutcome {
+        guard let token = KeychainToken.read() else {
+            return OfficialFetchOutcome(result: .noToken, diagnostics: OfficialFetchDiagnostics())
+        }
 
         var req = URLRequest(url: endpoint)
         req.timeoutInterval = 15
@@ -70,35 +129,15 @@ enum OfficialUsageProvider {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let sem = DispatchSemaphore(value: 0)
-        var result: OfficialResult = .offline
-        let dataTask = URLSession.shared.dataTask(with: req) { data, response, _ in
+        var outcome = OfficialFetchOutcome(result: .offline, diagnostics: OfficialFetchDiagnostics())
+        let dataTask = URLSession.shared.dataTask(with: req) { data, response, error in
             defer { sem.signal() }
-            guard let http = response as? HTTPURLResponse else {
-                result = .offline
-                return
-            }
-            if http.statusCode == 401 { result = .unauthorized; return }
-            if http.statusCode == 429 { result = .rateLimited; return }
-            guard (200..<300).contains(http.statusCode), let data = data else {
-                result = .offline
-                return
-            }
-            // HTTP 200 이어도 본문이 에러 객체일 수 있다(관측됨: {"error":{"type":"rate_limit_error"}}).
-            // 모든 필드가 Optional 이라 그대로 디코드하면 빈 .ok 로 오인되므로 먼저 거른다.
-            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let err = obj["error"] as? [String: Any] {
-                result = (err["type"] as? String) == "rate_limit_error" ? .rateLimited : .offline
-                return
-            }
-            guard let usage = try? JSONDecoder().decode(OfficialUsage.self, from: data) else {
-                result = .offline
-                return
-            }
-            result = .ok(usage)
+            let status = (response as? HTTPURLResponse)?.statusCode
+            outcome = classifyOfficialResponse(data: data, httpStatus: status, error: error)
         }
         dataTask.resume()
         sem.wait()
-        return result
+        return outcome
     }
 }
 
