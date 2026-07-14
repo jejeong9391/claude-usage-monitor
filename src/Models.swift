@@ -43,8 +43,6 @@ struct OfficialUsage: Decodable {
     }
 }
 
-private let fiveHourWindowSeconds: TimeInterval = 5 * 60 * 60
-
 func fiveHourDisplayUtilization(_ window: UsageWindow?, now: Date = Date()) -> Double {
     guard let window else { return 0 }
     guard let reset = parseDate(window.resetsAt), reset <= now else {
@@ -53,16 +51,25 @@ func fiveHourDisplayUtilization(_ window: UsageWindow?, now: Date = Date()) -> D
     return 0
 }
 
+func fiveHourSessionStarted(_ window: UsageWindow?, now: Date = Date()) -> Bool {
+    guard let window else { return false }
+    guard window.utilization > 0 else { return false }
+    guard let reset = parseDate(window.resetsAt) else { return true }
+    return reset > now
+}
+
 func fiveHourDisplayReset(_ window: UsageWindow?, now: Date = Date()) -> Date? {
-    guard var reset = parseDate(window?.resetsAt) else { return nil }
-    while reset <= now {
-        reset = reset.addingTimeInterval(fiveHourWindowSeconds)
+    guard fiveHourSessionStarted(window, now: now),
+          let reset = parseDate(window?.resetsAt),
+          reset > now
+    else {
+        return nil
     }
     return reset
 }
 
 func fiveHourWindowExpired(_ window: UsageWindow?, now: Date = Date()) -> Bool {
-    guard let reset = parseDate(window?.resetsAt) else { return false }
+    guard let window, window.utilization > 0, let reset = parseDate(window.resetsAt) else { return false }
     return reset <= now
 }
 

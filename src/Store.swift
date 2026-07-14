@@ -348,8 +348,10 @@ final class UsageStore: ObservableObject {
         if primaryProvider == .claude,
            let fiveHour = official?.fiveHour {
             let pct = Int(fiveHourDisplayUtilization(fiveHour).rounded())
-            let remaining = compactRemaining(until: fiveHourDisplayReset(fiveHour))
-            return "🔥 \(pct)% · \(remaining)"
+            if let reset = fiveHourDisplayReset(fiveHour) {
+                return "🔥 \(pct)% · \(compactRemaining(until: reset))"
+            }
+            return "🔥 \(pct)% · 시작 전"
         }
         return primarySnapshot.menuBarTitle
     }
@@ -474,6 +476,7 @@ private extension UsageStore {
         updatedAt: Date
     ) -> ProviderSnapshot {
         let reset = fiveHourDisplayReset(official?.fiveHour)
+        let sessionStarted = fiveHourSessionStarted(official?.fiveHour)
         let isExpiredFiveHour = fiveHourWindowExpired(official?.fiveHour)
         let primary: UsageMetric
         if let fiveHour = official?.fiveHour {
@@ -509,9 +512,13 @@ private extension UsageStore {
             sourceKind: sourceKind,
             confidence: confidence,
             state: state,
-            stateMessage: isExpiredFiveHour
-                ? "직전 5시간 공식 창이 종료되어 새 세션을 0%로 표시합니다. 다음 공식 갱신에서 실제 값을 다시 맞춥니다."
-                : claudeStateMessage(for: officialState, hasOfficial: official != nil, loading: loading),
+            stateMessage: claudeSnapshotMessage(
+                officialState: officialState,
+                hasOfficial: official != nil,
+                loading: loading,
+                expiredFiveHour: isExpiredFiveHour,
+                sessionStarted: sessionStarted
+            ),
             period: .fiveHour,
             primary: primary,
             resetAt: reset,
@@ -523,6 +530,22 @@ private extension UsageStore {
             modelSummary: modelSummary,
             updatedAt: updatedAt
         )
+    }
+
+    static func claudeSnapshotMessage(
+        officialState: OfficialResult,
+        hasOfficial: Bool,
+        loading: Bool,
+        expiredFiveHour: Bool,
+        sessionStarted: Bool
+    ) -> String {
+        if expiredFiveHour {
+            return "직전 5시간 공식 창이 종료되었습니다. 새 메시지를 보내면 다음 세션 reset 시간이 표시됩니다."
+        }
+        if hasOfficial, !sessionStarted {
+            return "아직 현재 5시간 세션이 시작되지 않았습니다. Claude Code에서 메시지를 보내면 reset 시간이 표시됩니다."
+        }
+        return claudeStateMessage(for: officialState, hasOfficial: hasOfficial, loading: loading)
     }
 
     static func claudeProviderState(

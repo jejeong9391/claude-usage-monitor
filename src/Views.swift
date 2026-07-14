@@ -680,6 +680,7 @@ struct PopoverView: View {
     func claudeOverviewCard(_ window: UsageWindow?) -> some View {
         let pct = fiveHourDisplayUtilization(window)
         let reset = fiveHourDisplayReset(window)
+        let sessionStarted = fiveHourSessionStarted(window)
         let color = Theme.percentColor(pct)
         Card {
             VStack(alignment: .leading, spacing: 14) {
@@ -690,7 +691,7 @@ struct PopoverView: View {
                             .foregroundColor(color)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
-                        Text("현재 5시간 세션")
+                        Text(sessionStarted ? "현재 5시간 세션" : "메시지를 보내면 시작")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Theme.textSecondary)
                     }
@@ -709,7 +710,7 @@ struct PopoverView: View {
                 ProgressBar(percent: pct, color: color, height: 9)
 
                 HStack(spacing: 10) {
-                    MetricTile(label: "재설정", value: compactRemaining(until: reset))
+                    MetricTile(label: "재설정", value: sessionStarted ? compactRemaining(until: reset) : "시작 전")
                     MetricTile(label: "비용", value: store.block.map { String(format: "$%.2f", $0.costUSD) } ?? "—")
                     MetricTile(label: "토큰", value: store.block.map { formatNum($0.tokenCounts.total) } ?? "—")
                     MetricTile(label: "요청", value: store.block.map { "\($0.entries)" } ?? "—")
