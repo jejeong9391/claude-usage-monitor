@@ -26,6 +26,7 @@ let p = telemetryPayload(installID: id1,
 check(p["result"] as? String == "offline", "payload result")
 check(p["httpStatus"] as? Int == 407, "payload httpStatus")
 check(p["proxyEnv"] as? Bool == true, "payload proxyEnv")
+check(p.keys.contains("bodyWasErrorObject"), "payload has bodyWasErrorObject key")
 let flat = "\(p)".lowercased()
 check(!flat.contains("bearer") && !flat.contains("token") && !flat.contains("authorization"), "payload has no secret")
 

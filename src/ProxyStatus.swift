@@ -6,7 +6,7 @@ struct ProxyStatus {
 }
 
 func proxyEnvPresent(_ env: [String: String]) -> Bool {
-    ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"].contains { env[$0]?.isEmpty == false }
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"].contains { env[$0]?.isEmpty == false }
 }
 
 func proxySystemEnabled(_ settings: [String: Any]) -> Bool {

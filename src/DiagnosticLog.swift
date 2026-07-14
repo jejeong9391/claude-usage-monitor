@@ -17,7 +17,7 @@ func diagnosticLogLine(date: Date, outcome: OfficialFetchOutcome,
     return "\(iso.string(from: date)) result=\(outcome.result.telemetryName) "
         + "http=\(http) urlerr=\(urlerr) "
         + "proxySystem=\(proxy.system) proxyEnv=\(proxy.env) "
-        + "decodeFailed=\(d.decodeFailed) v=\(appVersion) os=\(os)"
+        + "decodeFailed=\(d.decodeFailed) bodyErr=\(d.bodyWasErrorObject) v=\(appVersion) os=\(os)"
 }
 
 // MARK: - 파일 로거 (부수효과, try? 로 조용히 실패)

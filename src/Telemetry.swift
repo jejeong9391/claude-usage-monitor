@@ -23,6 +23,7 @@ func telemetryPayload(installID: String, outcome: OfficialFetchOutcome,
         "proxySystem": proxy.system,
         "proxyEnv": proxy.env,
         "decodeFailed": d.decodeFailed,
+        "bodyWasErrorObject": d.bodyWasErrorObject,
         "appVersion": appVersion,
         "os": os,
     ]

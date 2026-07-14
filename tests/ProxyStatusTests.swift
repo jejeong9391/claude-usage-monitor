@@ -7,6 +7,7 @@ func check(_ cond: Bool, _ name: String) {
 
 // env 감지
 check(proxyEnvPresent(["HTTPS_PROXY": "http://p:8080"]) == true, "env HTTPS_PROXY set")
+check(proxyEnvPresent(["HTTP_PROXY": "http://p:8080"]) == true, "env HTTP_PROXY set")
 check(proxyEnvPresent(["all_proxy": "socks://p:1080"]) == true, "env all_proxy set")
 check(proxyEnvPresent(["HTTPS_PROXY": ""]) == false, "env empty string ignored")
 check(proxyEnvPresent([:]) == false, "env none")

@@ -22,6 +22,7 @@ check(line.contains("urlerr=-1200"), "line has urlErrorCode")
 check(line.contains("proxySystem=false"), "line has proxySystem")
 check(line.contains("proxyEnv=true"), "line has proxyEnv")
 check(!line.lowercased().contains("bearer") && !line.contains("token"), "line has no secret")
+check(line.contains("bodyErr="), "line has bodyWasErrorObject")
 
 print(failures == 0 ? "ALL PASS" : "FAILURES: \(failures)")
 exit(failures == 0 ? 0 : 1)

@@ -100,6 +100,8 @@ func classifyOfficialResponse(data: Data?, httpStatus: Int?, error: Error?) -> O
     guard (200..<300).contains(status), let data = data else {
         return OfficialFetchOutcome(result: .offline, diagnostics: d)
     }
+    // HTTP 200 이어도 본문이 에러 객체일 수 있다. 모든 OfficialUsage 필드가 Optional 이라
+    // 빈/에러 본문을 그대로 디코드하면 빈 .ok 로 오인되므로, decode 전에 먼저 거른다.
     if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
        let err = obj["error"] as? [String: Any] {
         d.bodyWasErrorObject = true
