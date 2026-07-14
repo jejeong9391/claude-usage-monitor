@@ -17,6 +17,7 @@ final class UsageStore: ObservableObject {
     private var refreshInFlight = false
     private var officialCooldownUntil: Date?
     private var officialBackoffSeconds = UsageStore.officialInitialBackoff
+    private var didEmitSessionTelemetry = false
     @Published var officialRetryAt: Date?
 
     // 공식 (진실의 원천). 성공값은 유지하고 상태만 따로 표시 → 오프라인 시 직전 값 노출.
@@ -115,7 +116,9 @@ final class UsageStore: ObservableObject {
         let shouldFetchOfficial = forceOfficial || officialCooldownUntil.map { now >= $0 } ?? true
         let currentOfficialState = officialState
         Task.detached(priority: .userInitiated) { [weak self] in
-            let off = shouldFetchOfficial ? OfficialUsageProvider.fetch() : currentOfficialState
+            let outcome: OfficialFetchOutcome? = shouldFetchOfficial ? OfficialUsageProvider.fetch() : nil
+            let off = outcome?.result ?? currentOfficialState
+            let proxy: ProxyStatus? = shouldFetchOfficial ? currentProxyStatus() : nil
             let block = CCUsageProvider.activeBlock()
             let wCost = CCUsageProvider.weeklyCost()
             let openAIKeyExists = SecretStore.exists(.openAIAdminKey)
@@ -133,6 +136,8 @@ final class UsageStore: ObservableObject {
             let cursorUsage = CursorTeamUsageProvider.today(teamID: teamID)
             await self?.apply(
                 off: off,
+                outcome: outcome,
+                proxy: proxy,
                 block: block,
                 weeklyCost: wCost,
                 hasOpenAIAdminKey: openAIKeyExists,
@@ -150,6 +155,8 @@ final class UsageStore: ObservableObject {
 
     private func apply(
         off: OfficialResult,
+        outcome: OfficialFetchOutcome?,
+        proxy: ProxyStatus?,
         block: Block?,
         weeklyCost: Double?,
         hasOpenAIAdminKey: Bool,
@@ -165,6 +172,15 @@ final class UsageStore: ObservableObject {
         refreshInFlight = false
         if fetchedOfficial {
             updateOfficialCooldown(after: off)
+        }
+        if fetchedOfficial, let outcome, let proxy {
+            let previousName = officialState.telemetryName   // still previous — before officialState = off below
+            DiagnosticLog.log(outcome: outcome, proxy: proxy)
+            Telemetry.trackOfficialResult(
+                outcome: outcome, proxy: proxy,
+                previous: previousName,
+                firstOfSession: !didEmitSessionTelemetry)
+            didEmitSessionTelemetry = true
         }
         officialState = off
         if case let .ok(usage) = off { official = usage }
