@@ -1329,45 +1329,49 @@ struct PopoverView: View {
         }
     }
 
+    // 부가 기능이므로 카드 강조 없이 뮤트된 하단 섹션으로 처리한다.
     var diagnosticsSettings: some View {
-        Card("진단") {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: Binding(
+        VStack(alignment: .leading, spacing: 9) {
+            Divider().background(Theme.cardStroke).padding(.bottom, 2)
+
+            Text("진단")
+                .font(.system(size: 9.5, weight: .semibold))
+                .tracking(0.8)
+                .foregroundColor(Theme.textTertiary)
+
+            SettingToggleRow(
+                title: "익명 사용 진단",
+                subtitle: "문제 발생률·환경(프록시 등)만 익명으로 집계합니다. 토큰·사용량은 전송하지 않습니다.",
+                isOn: Binding(
                     get: { store.telemetryEnabled },
                     set: { store.setTelemetryEnabled($0) }
-                )) {
-                    Text("익명 사용 진단 보내기")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Theme.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(Theme.accent)
-                SettingsHint("문제 발생률·환경(프록시 등)만 익명으로 집계합니다. 토큰·사용량 내용은 전송하지 않습니다.")
+                )
+            )
 
-                Divider().background(Color.white.opacity(0.06))
-
-                Toggle(isOn: Binding(
+            SettingToggleRow(
+                title: "로컬 진단 로그",
+                subtitle: "이 맥에만 기록합니다(최대 512KB). 문제 재현 시 켠 뒤 로그 파일을 공유하세요.",
+                isOn: Binding(
                     get: { store.diagnosticLoggingEnabled },
                     set: { store.setDiagnosticLoggingEnabled($0) }
-                )) {
-                    Text("로컬 진단 로그 기록")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Theme.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(Theme.accent)
+                )
+            )
 
-                HStack {
-                    AuthButton(
-                        symbol: "folder",
-                        title: "로그 폴더 열기",
-                        color: Theme.textSecondary,
-                        action: openDiagnosticLogFolder
-                    )
-                    Spacer(minLength: 0)
+            Button(action: openDiagnosticLogFolder) {
+                HStack(spacing: 5) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 9))
+                    Text("로그 폴더 열기")
+                        .font(.system(size: 10, weight: .medium))
                 }
+                .foregroundColor(Theme.textTertiary)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .opacity(store.diagnosticLoggingEnabled ? 0.9 : 0.5)
+            .padding(.top, 1)
         }
+        .padding(.horizontal, 4)
     }
 
     func openDiagnosticLogFolder() {
@@ -2209,6 +2213,34 @@ struct SecretInputRow: View {
                     .buttonStyle(.plain)
                     .disabled(!isStored)
             }
+        }
+    }
+}
+
+struct SettingToggleRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                Text(subtitle)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(Theme.textTertiary)
+                    .lineSpacing(1)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(Theme.accent)
+                .scaleEffect(0.92, anchor: .trailing)
         }
     }
 }
