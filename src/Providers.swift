@@ -154,21 +154,36 @@ enum CCUsageProvider {
         env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/opt/node/bin:/usr/local/bin:/usr/bin:/bin"
         task.environment = env
         let outPipe = Pipe()
+        let outHandle = outPipe.fileHandleForReading
         task.standardOutput = outPipe
         task.standardError = Pipe()
+
+        // ccusage 는 모델 가격표(공개 LiteLLM 데이터)를 온라인에서 받아 정확한 비용을 계산한다.
+        // 네트워크 지연에 대비해: 출력을 백그라운드로 드레인(파이프 버퍼 데드락 방지)하고,
+        // 15초 안에 끝나지 않으면 강제 종료하고 실패 처리한다 → refresh 사이클이 멈추지 않는다.
+        var collected = Data()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            collected = outHandle.readDataToEndOfFile()
+            done.signal()
+        }
         do {
             try task.run()
-            task.waitUntilExit()
-            guard task.terminationStatus == 0 else { return nil }
-            return outPipe.fileHandleForReading.readDataToEndOfFile()
         } catch {
             return nil
         }
+        if done.wait(timeout: .now() + 15) == .timedOut {
+            task.terminate()
+            return nil
+        }
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return nil }
+        return collected
     }
 
     /// 현재 활성 5h 블록 (비용·토큰·burn·모델).
     static func activeBlock() -> Block? {
-        guard let d = run(["blocks", "--active", "--json", "--offline"]),
+        guard let d = run(["blocks", "--active", "--json"]),
               let parsed = try? JSONDecoder().decode(BlocksResponse.self, from: d)
         else { return nil }
         return parsed.blocks.first(where: { $0.isActive })
@@ -180,7 +195,7 @@ enum CCUsageProvider {
         df.dateFormat = "yyyyMMdd"
         let today = df.string(from: Date())
         let start = df.string(from: weekStart(from: Date()))
-        guard let d = run(["daily", "--json", "--offline", "-s", start, "-u", today]),
+        guard let d = run(["daily", "--json", "-s", start, "-u", today]),
               let parsed = try? JSONDecoder().decode(DailyResponse.self, from: d)
         else { return nil }
         return parsed.daily.reduce(0) { $0 + ($1.totalCost ?? 0) }
